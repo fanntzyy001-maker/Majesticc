@@ -1,0 +1,284 @@
+// ============================================================
+//  Majestic City Roleplay - Gamemode "Inferno" (starter base)
+//  Tanpa plugin: pakai SQLite bawaan a_samp (db_open, db_query)
+//  Compile dengan Pawno -> hasil: inferno.amx
+// ============================================================
+#include <a_samp>
+
+#define SERVER_NAME     "Majestic City Roleplay"
+#define DLG_REGISTER    1
+#define DLG_LOGIN       2
+#define START_MONEY     5000
+#define SPAWN_X         1642.0
+#define SPAWN_Y         -2333.0
+#define SPAWN_Z         13.5
+#define SPAWN_A         0.0
+
+enum E_PLAYER
+{
+    pID,
+    pMoney,
+    pAdmin,
+    pTries,
+    bool:pLogged
+}
+
+new P[MAX_PLAYERS][E_PLAYER];
+new DB:gDB;
+new Text:gServerTD;
+
+// Hash sederhana (lemah). Untuk server publik, ganti dengan plugin
+// whirlpool / bcrypt.
+stock HashPass(const pass[])
+{
+    new h = 5381;
+    for (new i = 0; pass[i]; i++) h = ((h << 5) + h) ^ pass[i];
+    return h;
+}
+
+stock ProxDetector(Float:range, playerid, const msg[], color)
+{
+    new Float:x, Float:y, Float:z;
+    GetPlayerPos(playerid, x, y, z);
+    for (new i = 0; i < MAX_PLAYERS; i++)
+    {
+        if (!IsPlayerConnected(i) || !P[i][pLogged]) continue;
+        if (IsPlayerInRangeOfPoint(i, range, x, y, z)) SendClientMessage(i, color, msg);
+    }
+    return 1;
+}
+
+stock SavePlayer(playerid)
+{
+    if (!P[playerid][pLogged]) return 0;
+    new q[128];
+    format(q, sizeof q, "UPDATE players SET money=%d, admin=%d WHERE id=%d",
+        GetPlayerMoney(playerid), P[playerid][pAdmin], P[playerid][pID]);
+    db_free_result(db_query(gDB, q));
+    return 1;
+}
+
+stock ShowAuth(playerid)
+{
+    new name[MAX_PLAYER_NAME], q[128], str[128];
+    GetPlayerName(playerid, name, sizeof name);
+    format(q, sizeof q, "SELECT id FROM players WHERE name='%s' LIMIT 1", name);
+    new DBResult:r = db_query(gDB, q);
+    if (db_num_rows(r))
+    {
+        P[playerid][pID] = db_get_field_assoc_int(r, "id");
+        format(str, sizeof str, "Selamat datang kembali, %s.\nMasukkan password:", name);
+        ShowPlayerDialog(playerid, DLG_LOGIN, DIALOG_STYLE_PASSWORD, SERVER_NAME " - Login", str, "Login", "Keluar");
+    }
+    else
+    {
+        format(str, sizeof str, "Akun %s belum terdaftar.\nBuat password (min. 5 karakter):", name);
+        ShowPlayerDialog(playerid, DLG_REGISTER, DIALOG_STYLE_PASSWORD, SERVER_NAME " - Register", str, "Daftar", "Keluar");
+    }
+    db_free_result(r);
+    return 1;
+}
+
+stock SpawnAfterAuth(playerid)
+{
+    P[playerid][pLogged] = true;
+    SetSpawnInfo(playerid, NO_TEAM, 0, SPAWN_X, SPAWN_Y, SPAWN_Z, SPAWN_A, 0, 0, 0, 0, 0, 0);
+    SpawnPlayer(playerid);
+    return 1;
+}
+
+main() {}
+
+public OnGameModeInit()
+{
+    SetGameModeText("Inferno RP");
+    UsePlayerPedAnims();
+    DisableInteriorEnterExits();
+    EnableStuntBonusForAll(0);
+
+    gDB = db_open("majestic.db");
+    db_free_result(db_query(gDB,
+        "CREATE TABLE IF NOT EXISTS players (id INTEGER PRIMARY KEY AUTOINCREMENT, \
+        name TEXT UNIQUE, pass INTEGER, money INTEGER DEFAULT 5000, admin INTEGER DEFAULT 0)"));
+
+    // TextDraw nama server
+    gServerTD = TextDrawCreate(545.0, 428.0, SERVER_NAME);
+    TextDrawLetterSize(gServerTD, 0.25, 1.1);
+    TextDrawAlignment(gServerTD, 2);
+    TextDrawColor(gServerTD, 0xFFD700FF);
+    TextDrawSetOutline(gServerTD, 1);
+    TextDrawSetProportional(gServerTD, 1);
+    TextDrawFont(gServerTD, 1);
+
+    AddPlayerClass(0, SPAWN_X, SPAWN_Y, SPAWN_Z, SPAWN_A, 0, 0, 0, 0, 0, 0);
+    print("[Inferno] " SERVER_NAME " loaded.");
+    return 1;
+}
+
+public OnGameModeExit()
+{
+    for (new i = 0; i < MAX_PLAYERS; i++) if (IsPlayerConnected(i)) SavePlayer(i);
+    TextDrawDestroy(gServerTD);
+    db_close(gDB);
+    return 1;
+}
+
+public OnPlayerConnect(playerid)
+{
+    P[playerid][pLogged] = false;
+    P[playerid][pTries] = 0;
+    P[playerid][pAdmin] = 0;
+    TextDrawShowForPlayer(playerid, gServerTD);
+    SendClientMessage(playerid, 0xFFD700FF, "Selamat datang di " SERVER_NAME "!");
+    ShowAuth(playerid);
+    return 1;
+}
+
+public OnPlayerDisconnect(playerid, reason)
+{
+    SavePlayer(playerid);
+    P[playerid][pLogged] = false;
+    return 1;
+}
+
+public OnPlayerRequestClass(playerid, classid)
+{
+    if (P[playerid][pLogged]) SpawnPlayer(playerid);
+    return 1;
+}
+
+public OnPlayerRequestSpawn(playerid)
+{
+    return P[playerid][pLogged];
+}
+
+public OnPlayerSpawn(playerid)
+{
+    SetPlayerInterior(playerid, 0);
+    SetPlayerVirtualWorld(playerid, 0);
+    return 1;
+}
+
+public OnPlayerDeath(playerid, killerid, reason)
+{
+    SendDeathMessage(killerid, playerid, reason);
+    return 1;
+}
+
+public OnDialogResponse(playerid, dialogid, response, listitem, inputtext[])
+{
+    if (dialogid == DLG_REGISTER)
+    {
+        if (!response) return Kick(playerid);
+        if (strlen(inputtext) < 5)
+        {
+            SendClientMessage(playerid, 0xFF0000FF, "Password minimal 5 karakter.");
+            return ShowAuth(playerid);
+        }
+        new name[MAX_PLAYER_NAME], q[160];
+        GetPlayerName(playerid, name, sizeof name);
+        format(q, sizeof q, "INSERT INTO players (name, pass, money) VALUES ('%s', %d, %d)",
+            name, HashPass(inputtext), START_MONEY);
+        db_free_result(db_query(gDB, q));
+        new DBResult:r;
+        format(q, sizeof q, "SELECT id FROM players WHERE name='%s'", name);
+        r = db_query(gDB, q);
+        if (db_num_rows(r)) P[playerid][pID] = db_get_field_assoc_int(r, "id");
+        db_free_result(r);
+        ResetPlayerMoney(playerid);
+        GivePlayerMoney(playerid, START_MONEY);
+        SpawnAfterAuth(playerid);
+        return 1;
+    }
+    if (dialogid == DLG_LOGIN)
+    {
+        if (!response) return Kick(playerid);
+        new q[128], DBResult:r;
+        format(q, sizeof q, "SELECT pass, money, admin FROM players WHERE id=%d", P[playerid][pID]);
+        r = db_query(gDB, q);
+        if (db_num_rows(r) && db_get_field_assoc_int(r, "pass") == HashPass(inputtext))
+        {
+            P[playerid][pAdmin] = db_get_field_assoc_int(r, "admin");
+            ResetPlayerMoney(playerid);
+            GivePlayerMoney(playerid, db_get_field_assoc_int(r, "money"));
+            db_free_result(r);
+            SpawnAfterAuth(playerid);
+            return 1;
+        }
+        db_free_result(r);
+        if (++P[playerid][pTries] >= 3)
+        {
+            SendClientMessage(playerid, 0xFF0000FF, "Terlalu banyak percobaan salah.");
+            return Kick(playerid);
+        }
+        SendClientMessage(playerid, 0xFF0000FF, "Password salah.");
+        return ShowAuth(playerid);
+    }
+    return 0;
+}
+
+public OnPlayerText(playerid, text[])
+{
+    if (!P[playerid][pLogged]) return 0;
+    new name[MAX_PLAYER_NAME], str[160];
+    GetPlayerName(playerid, name, sizeof name);
+    format(str, sizeof str, "%s berkata: %s", name, text);
+    ProxDetector(20.0, playerid, str, 0xFFFFFFFF);
+    return 0; // cegah chat global
+}
+
+public OnPlayerCommandText(playerid, cmdtext[])
+{
+    if (!P[playerid][pLogged]) return 1;
+    new name[MAX_PLAYER_NAME], str[160];
+    GetPlayerName(playerid, name, sizeof name);
+
+    if (!strcmp(cmdtext, "/stats", true))
+    {
+        format(str, sizeof str, "[STATS] %s | Uang: $%d | Admin: %d", name, GetPlayerMoney(playerid), P[playerid][pAdmin]);
+        SendClientMessage(playerid, 0x00FF00FF, str);
+        return 1;
+    }
+    if (!strcmp(cmdtext, "/me ", true, 4))
+    {
+        format(str, sizeof str, "* %s %s", name, cmdtext[4]);
+        ProxDetector(20.0, playerid, str, 0xC2A2DAFF);
+        return 1;
+    }
+    if (!strcmp(cmdtext, "/do ", true, 4))
+    {
+        format(str, sizeof str, "* %s (( %s ))", cmdtext[4], name);
+        ProxDetector(20.0, playerid, str, 0xC2A2DAFF);
+        return 1;
+    }
+    if (!strcmp(cmdtext, "/b ", true, 3))
+    {
+        format(str, sizeof str, "%s: (( %s ))", name, cmdtext[3]);
+        ProxDetector(20.0, playerid, str, 0xAAAAAAFF);
+        return 1;
+    }
+    if (!strcmp(cmdtext, "/setadmin ", true, 10)) // hanya RCON admin
+    {
+        if (!IsPlayerAdmin(playerid)) return SendClientMessage(playerid, 0xFF0000FF, "Hanya RCON admin.");
+        new id, lvl;
+        if (sscanf2(cmdtext[10], id, lvl) || !IsPlayerConnected(id)) return SendClientMessage(playerid, 0xFF0000FF, "Pakai: /setadmin [id] [level]");
+        P[id][pAdmin] = lvl;
+        SendClientMessage(playerid, 0x00FF00FF, "Level admin diubah.");
+        return 1;
+    }
+    return 0;
+}
+
+// parser sederhana "id level" pengganti sscanf
+stock sscanf2(const s[], &a, &b)
+{
+    new i = 0, tmp[12], j = 0;
+    while (s[i] == ' ') i++;
+    while (s[i] && s[i] != ' ' && j < 11) tmp[j++] = s[i++];
+    tmp[j] = 0; if (!j) return 1;
+    a = strval(tmp);
+    while (s[i] == ' ') i++;
+    if (!s[i]) return 1;
+    b = strval(s[i]);
+    return 0;
+}
